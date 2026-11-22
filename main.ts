@@ -605,22 +605,22 @@ function blockEdits(lines: string[], strict: boolean): Edit[] {
 /* V4A patches (SPEC.md section 8)                                     */
 /* ------------------------------------------------------------------ */
 
-interface VChunk {
+interface VPart {
   anchor: string | null;
   eof: boolean;
   steps: Step[];
 }
 
-interface VSection {
+interface VFile {
   kind: 'add' | 'delete' | 'update';
   path: string;
   moveTo: string | null;
   lines: string[];
-  chunks: VChunk[];
+  parts: VPart[];
   updateLine: number;
 }
 
-function parseV4(lines: string[]): VSection[] {
+function readV4(lines: string[]): VFile[] {
   const first = lines.findIndex((l) => !blank(l));
   if (first < 0) throw new Halt('error: parse 1');
   if ((lines[first] as string).trim() !== '*** Begin Patch') throw new Halt(`error: parse ${first + 1}`);
@@ -632,7 +632,7 @@ function parseV4(lines: string[]): VSection[] {
     }
   }
   if ((lines[last] as string).trim() !== '*** End Patch') throw new Halt(`error: parse ${lines.length + 1}`);
-  const sections: VSection[] = [];
+  const files: VFile[] = [];
   let i = first + 1;
   while (i < last) {
     const l = lines[i] as string;
@@ -640,44 +640,44 @@ function parseV4(lines: string[]): VSection[] {
       i += 1;
       continue;
     }
-    let sec: VSection | null = null;
-    if (l.startsWith('*** Add File: ')) sec = { kind: 'add', path: l.slice('*** Add File: '.length).trim(), moveTo: null, lines: [], chunks: [], updateLine: i + 1 };
-    else if (l.startsWith('*** Delete File: ')) sec = { kind: 'delete', path: l.slice('*** Delete File: '.length).trim(), moveTo: null, lines: [], chunks: [], updateLine: i + 1 };
-    else if (l.startsWith('*** Update File: ')) sec = { kind: 'update', path: l.slice('*** Update File: '.length).trim(), moveTo: null, lines: [], chunks: [], updateLine: i + 1 };
+    let f: VFile | null = null;
+    if (l.startsWith('*** Add File: ')) f = { kind: 'add', path: l.slice('*** Add File: '.length).trim(), moveTo: null, lines: [], parts: [], updateLine: i + 1 };
+    else if (l.startsWith('*** Delete File: ')) f = { kind: 'delete', path: l.slice('*** Delete File: '.length).trim(), moveTo: null, lines: [], parts: [], updateLine: i + 1 };
+    else if (l.startsWith('*** Update File: ')) f = { kind: 'update', path: l.slice('*** Update File: '.length).trim(), moveTo: null, lines: [], parts: [], updateLine: i + 1 };
     else throw new Halt(`error: parse ${i + 1}`);
     i += 1;
-    i = readV4Section(lines, i, last, sec);
-    sections.push(sec);
+    i = scanVSection(lines, i, last, f);
+    files.push(f);
   }
-  if (sections.length === 0) throw new Halt('error: parse 1');
-  return sections;
+  if (files.length === 0) throw new Halt('error: parse 1');
+  return files;
 }
 
-/** Read one V4A section's body; returns where the next section starts. */
-function readV4Section(lines: string[], i: number, last: number, sec: VSection): number {
+/** Read one V4A file's body; returns where the next file starts. */
+function scanVSection(lines: string[], i: number, last: number, f: VFile): number {
   const isStart = (l: string): boolean =>
     l.startsWith('*** Add File: ') || l.startsWith('*** Delete File: ') || l.startsWith('*** Update File: ');
   let j = i;
-  if (sec.kind === 'add') {
+  if (f.kind === 'add') {
     while (j < last) {
       const l = lines[j] as string;
       if (isStart(l)) break;
       if (l === '') {
-        sec.lines.push('');
+        f.lines.push('');
         j += 1;
         continue;
       }
       if (l.startsWith('+')) {
-        sec.lines.push(l.slice(1));
+        f.lines.push(l.slice(1));
         j += 1;
         continue;
       }
       throw new Halt(`error: parse ${j + 1}`);
     }
-    while (sec.lines.length > 0 && sec.lines[sec.lines.length - 1] === '') sec.lines.pop();
+    while (f.lines.length > 0 && f.lines[f.lines.length - 1] === '') f.lines.pop();
     return j;
   }
-  if (sec.kind === 'delete') {
+  if (f.kind === 'delete') {
     while (j < last) {
       const l = lines[j] as string;
       if (isStart(l)) break;
@@ -689,16 +689,16 @@ function readV4Section(lines: string[], i: number, last: number, sec: VSection):
     }
     return j;
   }
-  let chunk: VChunk | null = null;
-  const closeChunk = (): void => {
-    if (chunk !== null) {
-      sec.chunks.push(chunk);
-      chunk = null;
+  let part: VPart | null = null;
+  const seal = (): void => {
+    if (part !== null) {
+      f.parts.push(part);
+      part = null;
     }
   };
   while (j < last && blank(lines[j] as string)) j += 1;
   if (j < last && (lines[j] as string).startsWith('*** Move to: ')) {
-    sec.moveTo = (lines[j] as string).slice('*** Move to: '.length).trim();
+    f.moveTo = (lines[j] as string).slice('*** Move to: '.length).trim();
     j += 1;
     while (j < last && blank(lines[j] as string)) j += 1;
   }
@@ -706,21 +706,21 @@ function readV4Section(lines: string[], i: number, last: number, sec: VSection):
     const l = lines[j] as string;
     if (isStart(l)) break;
     if (blank(l)) {
-      if (chunk !== null) chunk.steps.push({ mode: 'keep', text: '' });
+      if (part !== null) part.steps.push({ mode: 'keep', text: '' });
       j += 1;
       continue;
     }
     if (l.startsWith('@@')) {
-      closeChunk();
+      seal();
       const anchor = l.slice(2).trim();
-      chunk = { anchor: anchor === '' ? null : anchor, eof: false, steps: [] };
+      part = { anchor: anchor === '' ? null : anchor, eof: false, steps: [] };
       j += 1;
       continue;
     }
     if (l === '*** End of File') {
-      if (chunk === null) throw new Halt(`error: parse ${j + 1}`);
-      chunk.eof = true;
-      closeChunk();
+      if (part === null) throw new Halt(`error: parse ${j + 1}`);
+      part.eof = true;
+      seal();
       j += 1;
       continue;
     }
@@ -728,35 +728,35 @@ function readV4Section(lines: string[], i: number, last: number, sec: VSection):
     if (l.startsWith('***')) throw new Halt(`error: parse ${j + 1}`);
     const c = l[0] as string;
     if (c === ' ' || c === '-' || c === '+') {
-      if (chunk === null) {
-        if (sec.chunks.length > 0) throw new Halt(`error: parse ${j + 1}`);
-        chunk = { anchor: null, eof: false, steps: [] };
+      if (part === null) {
+        if (f.parts.length > 0) throw new Halt(`error: parse ${j + 1}`);
+        part = { anchor: null, eof: false, steps: [] };
       }
-      if (c === ' ') chunk.steps.push({ mode: 'keep', text: l.slice(1) });
-      else if (c === '-') chunk.steps.push({ mode: 'drop', text: l.slice(1) });
-      else chunk.steps.push({ mode: 'add', text: l.slice(1) });
+      if (c === ' ') part.steps.push({ mode: 'keep', text: l.slice(1) });
+      else if (c === '-') part.steps.push({ mode: 'drop', text: l.slice(1) });
+      else part.steps.push({ mode: 'add', text: l.slice(1) });
       j += 1;
       continue;
     }
     throw new Halt(`error: parse ${j + 1}`);
   }
-  closeChunk();
-  while (sec.chunks.length > 0) {
-    const tail = sec.chunks[sec.chunks.length - 1] as VChunk;
+  seal();
+  while (f.parts.length > 0) {
+    const tail = f.parts[f.parts.length - 1] as VPart;
     while (tail.steps.length > 0) {
       const o = tail.steps[tail.steps.length - 1] as Step;
       if (o.mode === 'keep' && o.text === '') tail.steps.pop();
       else break;
     }
-    if (tail.steps.length === 0 && tail.anchor === null && !tail.eof) sec.chunks.pop();
+    if (tail.steps.length === 0 && tail.anchor === null && !tail.eof) f.parts.pop();
     else break;
   }
-  if (sec.chunks.length === 0 && sec.moveTo === null) throw new Halt(`error: parse ${sec.updateLine}`);
+  if (f.parts.length === 0 && f.moveTo === null) throw new Halt(`error: parse ${f.updateLine}`);
   return j;
 }
 
 /** The first row at or after `from` equal to `anchor`, at the first tier with one. */
-function findAnchor(rows: string[], anchor: string, from: number, strict: boolean): number | null {
+function seekAnchor(rows: string[], anchor: string, from: number, strict: boolean): number | null {
   const tiers = strict ? [0] : [0, 1, 2];
   for (const t of tiers) {
     for (let j = from; j < rows.length; j += 1) {
@@ -766,61 +766,62 @@ function findAnchor(rows: string[], anchor: string, from: number, strict: boolea
   return null;
 }
 
-function v4Edits(lines: string[], strict: boolean): Edit[] {
-  const sections = parseV4(lines);
-  return sections.map((sec) => ({
+function v4Jobs(lines: string[], strict: boolean): Edit[] {
+  const files = readV4(lines);
+  return files.map((f) => ({
     exec(vault: Vault, moves: string[][]): void {
-      if (!isSafe(sec.path)) throw new Slip('unsafe', sec.path);
-      if (sec.moveTo !== null && !isSafe(sec.moveTo)) throw new Slip('unsafe', sec.moveTo);
-      if (sec.kind === 'add') {
-        if (vault.now(sec.path) !== null) throw new Slip('exists', sec.path);
-        vault.put(sec.path, sec.lines.length === 0 ? '' : sec.lines.join('\n') + '\n');
+      if (!isSafe(f.path)) throw new Slip('unsafe', f.path);
+      if (f.moveTo !== null && !isSafe(f.moveTo)) throw new Slip('unsafe', f.moveTo);
+      if (f.kind === 'add') {
+        if (vault.now(f.path) !== null) throw new Slip('exists', f.path);
+        vault.put(f.path, f.lines.length === 0 ? '' : f.lines.join('\n') + '\n');
         return;
       }
-      if (sec.kind === 'delete') {
-        if (vault.now(sec.path) === null) throw new Slip('missing', sec.path);
-        vault.put(sec.path, null);
+      if (f.kind === 'delete') {
+        if (vault.now(f.path) === null) throw new Slip('missing', f.path);
+        vault.put(f.path, null);
         return;
       }
-      const cur = vault.now(sec.path);
-      if (cur === null) throw new Slip('missing', sec.path);
-      if (sec.moveTo !== null && vault.now(sec.moveTo) !== null) throw new Slip('exists', sec.moveTo);
+      const cur = vault.now(f.path);
+      if (cur === null) throw new Slip('missing', f.path);
+      if (f.moveTo !== null && vault.now(f.moveTo) !== null) throw new Slip('exists', f.moveTo);
       const page = Page.parse(cur);
-      let cursor = 0;
-      for (const chunk of sec.chunks) {
-        if (chunk.anchor !== null) {
-          const at = findAnchor(page.rows, chunk.anchor, cursor, strict);
-          if (at === null) throw new Slip('no-match', sec.path);
-          cursor = at + 1;
+      let pos = 0;
+      for (const part of f.parts) {
+        if (part.anchor !== null) {
+          const at = seekAnchor(page.rows, part.anchor, pos, strict);
+          if (at === null) throw new Slip('no-match', f.path);
+          pos = at + 1;
         }
-        const old = oldRows(chunk.steps);
+        const old = oldRows(part.steps);
         if (old.length === 0) {
-          const at = chunk.eof ? page.rows.length : cursor;
-          page.rows.splice(at, 0, ...newRows(chunk.steps));
-          cursor = at + newRows(chunk.steps).length;
+          const at = part.eof ? page.rows.length : pos;
+          const ins = newRows(part.steps);
+          page.rows.splice(at, 0, ...ins);
+          pos = at + ins.length;
           continue;
         }
         const tiers = strict ? [0] : [0, 1, 2];
         let found: { tier: number; p: number } | null = null;
         for (const t of tiers) {
-          const pos = spots(page.rows, old, t).filter((p) => p >= cursor && (!chunk.eof || p + old.length === page.rows.length));
-          if (pos.length > 0) {
-            found = { tier: t, p: pos[0] as number };
+          const hits = spots(page.rows, old, t).filter((p) => p >= pos && (!part.eof || p + old.length === page.rows.length));
+          if (hits.length > 0) {
+            found = { tier: t, p: hits[0] as number };
             break;
           }
         }
-        if (found === null) throw new Slip('no-match', sec.path);
-        const rep = stitch(chunk.steps, page.rows, found.p, found.tier);
+        if (found === null) throw new Slip('no-match', f.path);
+        const rep = stitch(part.steps, page.rows, found.p, found.tier);
         page.rows.splice(found.p, old.length, ...rep);
-        cursor = found.p + rep.length;
+        pos = found.p + rep.length;
       }
       const out = page.render();
-      if (sec.moveTo !== null) {
-        vault.put(sec.moveTo, out);
-        vault.put(sec.path, null);
-        moves.push([sec.path, sec.moveTo]);
+      if (f.moveTo !== null) {
+        vault.put(f.moveTo, out);
+        vault.put(f.path, null);
+        moves.push([f.path, f.moveTo]);
       } else {
-        vault.put(sec.path, out);
+        vault.put(f.path, out);
       }
     },
   }));
@@ -831,66 +832,66 @@ function v4Edits(lines: string[], strict: boolean): Edit[] {
 /* ------------------------------------------------------------------ */
 
 /** One JSON edit object as an Edit, or null when it is not one. */
-function jsonEdit(v: unknown): Edit | null {
+function jsonJob(v: unknown): Edit | null {
   if (v === null || typeof v !== 'object' || Array.isArray(v)) return null;
-  const o = v as Record<string, unknown>;
-  const p = o.path;
-  if (typeof p !== 'string') return null;
-  if (o.command === 'create' && typeof o.file_text === 'string') {
-    const text = o.file_text;
+  const obj = v as Record<string, unknown>;
+  const dest = obj.path;
+  if (typeof dest !== 'string') return null;
+  if (obj.command === 'create' && typeof obj.file_text === 'string') {
+    const body = obj.file_text;
     return {
       exec(vault: Vault): void {
-        if (!isSafe(p)) throw new Slip('unsafe', p);
-        if (vault.now(p) !== null) throw new Slip('exists', p);
-        vault.put(p, text);
+        if (!isSafe(dest)) throw new Slip('unsafe', dest);
+        if (vault.now(dest) !== null) throw new Slip('exists', dest);
+        vault.put(dest, body);
       },
     };
   }
-  if (o.command === 'str_replace' && typeof o.old_str === 'string' && o.old_str !== '' && (o.new_str === undefined || typeof o.new_str === 'string')) {
-    const oldStr = o.old_str;
-    const newStr = (o.new_str as string | undefined) ?? '';
+  if (obj.command === 'str_replace' && typeof obj.old_str === 'string' && obj.old_str !== '' && (obj.new_str === undefined || typeof obj.new_str === 'string')) {
+    const from = obj.old_str;
+    const to = (obj.new_str as string | undefined) ?? '';
     return {
       exec(vault: Vault): void {
-        if (!isSafe(p)) throw new Slip('unsafe', p);
-        const before = vault.now(p);
-        if (before === null) throw new Slip('missing', p);
-        const nl = before.indexOf('\n');
-        const crlf = nl > 0 && before[nl - 1] === '\r';
-        const flat = (s: string): string => (crlf ? s.replaceAll('\r\n', '\n') : s);
-        const t = flat(before);
-        const old = flat(oldStr);
-        let count = 0;
-        for (let k = t.indexOf(old); k >= 0; k = t.indexOf(old, k + 1)) count += 1;
-        if (count === 0) throw new Slip('no-match', p);
-        if (count > 1) throw new Slip('ambiguous', p);
-        const at = t.indexOf(old);
-        const out = t.slice(0, at) + flat(newStr) + t.slice(at + old.length);
-        vault.put(p, crlf ? out.replaceAll('\n', '\r\n') : out);
+        if (!isSafe(dest)) throw new Slip('unsafe', dest);
+        const cur = vault.now(dest);
+        if (cur === null) throw new Slip('missing', dest);
+        const br = cur.indexOf('\n');
+        const crlf = br > 0 && cur[br - 1] === '\r';
+        const plain = (s: string): string => (crlf ? s.replaceAll('\r\n', '\n') : s);
+        const flat = plain(cur);
+        const needle = plain(from);
+        let hits = 0;
+        for (let k = flat.indexOf(needle); k >= 0; k = flat.indexOf(needle, k + 1)) hits += 1;
+        if (hits === 0) throw new Slip('no-match', dest);
+        if (hits > 1) throw new Slip('ambiguous', dest);
+        const idx = flat.indexOf(needle);
+        const done = flat.slice(0, idx) + plain(to) + flat.slice(idx + needle.length);
+        vault.put(dest, crlf ? done.replaceAll('\n', '\r\n') : done);
       },
     };
   }
-  if (o.command === 'insert' && typeof o.insert_line === 'number' && Number.isInteger(o.insert_line) && typeof o.new_str === 'string') {
-    const line = o.insert_line;
-    const add = splitPatch(o.new_str);
+  if (obj.command === 'insert' && typeof obj.insert_line === 'number' && Number.isInteger(obj.insert_line) && typeof obj.new_str === 'string') {
+    const row = obj.insert_line;
+    const ins = splitPatch(obj.new_str);
     return {
       exec(vault: Vault): void {
-        if (!isSafe(p)) throw new Slip('unsafe', p);
-        const before = vault.now(p);
-        if (before === null) throw new Slip('missing', p);
-        const page = Page.parse(before);
-        if (line < 0 || line > page.rows.length) throw new Slip('no-match', p);
-        page.rows.splice(line, 0, ...add);
-        vault.put(p, page.render());
+        if (!isSafe(dest)) throw new Slip('unsafe', dest);
+        const cur = vault.now(dest);
+        if (cur === null) throw new Slip('missing', dest);
+        const page = Page.parse(cur);
+        if (row < 0 || row > page.rows.length) throw new Slip('no-match', dest);
+        page.rows.splice(row, 0, ...ins);
+        vault.put(dest, page.render());
       },
     };
   }
   return null;
 }
 
-function jsonEdits(text: string, lines: string[]): Edit[] {
+function readJson(text: string, lines: string[]): Edit[] {
   const first = lines.findIndex((l) => !blank(l));
   if (first < 0) throw new Halt('error: parse 1');
-  const edits: Edit[] = [];
+  const jobs: Edit[] = [];
   if ((lines[first] as string).trimStart().startsWith('[')) {
     let v: unknown;
     try {
@@ -900,127 +901,127 @@ function jsonEdits(text: string, lines: string[]): Edit[] {
     }
     if (!Array.isArray(v)) throw new Halt(`error: parse ${first + 1}`);
     for (const x of v) {
-      const e = jsonEdit(x);
-      if (e === null) throw new Halt(`error: parse ${first + 1}`);
-      edits.push(e);
+      const job = jsonJob(x);
+      if (job === null) throw new Halt(`error: parse ${first + 1}`);
+      jobs.push(job);
     }
-    return edits;
+    return jobs;
   }
   lines.forEach((l, i) => {
     if (blank(l)) return;
-    let e: Edit | null = null;
+    let job: Edit | null = null;
     try {
-      e = jsonEdit(JSON.parse(l));
+      job = jsonJob(JSON.parse(l));
     } catch {
-      e = null;
+      job = null;
     }
-    if (e === null) throw new Halt(`error: parse ${i + 1}`);
-    edits.push(e);
+    if (job === null) throw new Halt(`error: parse ${i + 1}`);
+    jobs.push(job);
   });
-  return edits;
+  return jobs;
 }
 
 /* ------------------------------------------------------------------ */
 /* Running the CLI (SPEC.md sections 1, 2 and 10)                      */
 /* ------------------------------------------------------------------ */
 
-function run(argv: string[]): { code: number; out: string[] } {
-  let format: string | null = null;
-  let check = false;
-  let strict = false;
-  const pos: string[] = [];
+function drive(argv: string[]): { code: number; out: string[] } {
+  let fmt: string | null = null;
+  let dry = false;
+  let exact = false;
+  const rest: string[] = [];
   let ended = false;
   for (const a of argv) {
     if (!ended && a === '--') ended = true;
     else if (!ended && a.startsWith('-') && a !== '-') {
-      if (a.startsWith('--format=') && format === null && (KNOWN_FORMATS as readonly string[]).includes(a.slice(9))) format = a.slice(9);
-      else if (a === '--check' && !check) check = true;
-      else if (a === '--strict' && !strict) strict = true;
+      if (a.startsWith('--format=') && fmt === null && (KNOWN_FORMATS as readonly string[]).includes(a.slice(9))) fmt = a.slice(9);
+      else if (a === '--check' && !dry) dry = true;
+      else if (a === '--strict' && !exact) exact = true;
       else return { code: 2, out: ['error: usage'] };
-    } else pos.push(a);
+    } else rest.push(a);
   }
-  if (pos.length > 1) return { code: 2, out: ['error: usage'] };
-  const file = pos.length === 0 || pos[0] === '-' ? null : (pos[0] as string);
-  let text = '';
+  if (rest.length > 1) return { code: 2, out: ['error: usage'] };
+  const patchFile = rest.length === 0 || rest[0] === '-' ? null : (rest[0] as string);
+  let raw = '';
   try {
-    text = fs.readFileSync(file ?? 0, 'utf8');
+    raw = fs.readFileSync(patchFile ?? 0, 'utf8');
   } catch {
-    if (file !== null) return { code: 2, out: ['error: no-patch'] };
+    if (patchFile !== null) return { code: 2, out: ['error: no-patch'] };
   }
-  const lines = splitPatch(text);
-  const kind = format === null || format === 'auto' ? detect(lines) : format;
-  if (kind === null) return { code: 2, out: ['error: format'] };
+  const rows = splitPatch(raw);
+  const shape = fmt === null || fmt === 'auto' ? detect(rows) : fmt;
+  if (shape === null) return { code: 2, out: ['error: format'] };
   let edits: Edit[];
   try {
-    if (kind === 'json') edits = jsonEdits(text, lines);
-    else if (kind === 'unified') edits = diffEdits(lines, strict);
-    else if (kind === 'search-replace') edits = blockEdits(lines, strict);
-    else edits = v4Edits(lines, strict);
+    if (shape === 'json') edits = readJson(raw, rows);
+    else if (shape === 'unified') edits = diffEdits(rows, exact);
+    else if (shape === 'search-replace') edits = blockEdits(rows, exact);
+    else edits = v4Jobs(rows, exact);
     if (edits.length === 0) throw new Halt('error: parse 1');
   } catch (e) {
     if (e instanceof Halt) return { code: 2, out: [e.text] };
     throw e;
   }
-  const vault = new Vault();
-  const moves: string[][] = [];
-  const fails: Slip[] = [];
+  const store = new Vault();
+  const renames: string[][] = [];
+  const misses: Slip[] = [];
   for (const edit of edits) {
-    const before = new Map(vault.changed);
-    const movesBefore = moves.length;
+    const snap = new Map(store.changed);
+    const renamesBefore = renames.length;
     try {
-      edit.exec(vault, moves);
+      edit.exec(store, renames);
     } catch (e) {
       if (!(e instanceof Slip)) throw e;
-      vault.changed.clear();
-      for (const [k, v] of before) vault.changed.set(k, v);
-      moves.length = movesBefore;
-      fails.push(e);
+      store.changed.clear();
+      for (const [k, v] of snap) store.changed.set(k, v);
+      renames.length = renamesBefore;
+      misses.push(e);
     }
   }
-  if (fails.length > 0) {
-    return { code: 1, out: [...fails.map((f) => `error: ${f.code} ${f.path}`), `failed: ${fails.length} of ${edits.length} edits`] };
+  if (misses.length > 0) {
+    return { code: 1, out: [...misses.map((f) => `error: ${f.code} ${f.path}`), `failed: ${misses.length} of ${edits.length} edits`] };
   }
-  const rows: { key: string; line: string }[] = [];
-  const added = new Set<string>();
-  const deleted = new Set<string>();
-  for (const p of vault.changed.keys()) {
-    const was = vault.orig(p);
-    const now = vault.changed.get(p) as string | null;
+  const report: { key: string; line: string }[] = [];
+  const created = new Set<string>();
+  const removed = new Set<string>();
+  for (const p of store.changed.keys()) {
+    const was = store.orig(p);
+    const now = store.changed.get(p) as string | null;
     if (was === now) continue;
-    if (was === null) added.add(p);
-    else if (now === null) deleted.add(p);
-    rows.push({ key: p, line: `${was === null ? 'A' : now === null ? 'D' : 'M'} ${p}` });
+    if (was === null) created.add(p);
+    else if (now === null) removed.add(p);
+    report.push({ key: p, line: `${was === null ? 'A' : now === null ? 'D' : 'M'} ${p}` });
   }
-  const moveFrom = new Map<string, string>();
-  for (const [o, n] of moves) {
-    if (!moveFrom.has(o)) moveFrom.set(o, n);
+  const renameOf = new Map<string, string>();
+  for (const [o, n] of renames) {
+    if (!renameOf.has(o)) renameOf.set(o, n);
   }
-  for (const d of [...deleted]) {
-    let target = moveFrom.get(d);
-    let hops = 0;
-    while (target !== undefined && moveFrom.has(target) && hops < moves.length) {
-      target = moveFrom.get(target);
-      hops += 1;
+  for (const d of [...removed]) {
+    let dest = renameOf.get(d);
+    let steps = 0;
+    while (dest !== undefined && renameOf.has(dest) && steps < renames.length) {
+      dest = renameOf.get(dest);
+      steps += 1;
     }
-    if (target !== undefined && vault.orig(target) === null && vault.now(target) !== null && vault.now(d) === null) {
-      rows.splice(
-        rows.findIndex((r) => r.line === `D ${d}`),
+    if (dest !== undefined && store.orig(dest) === null && store.now(dest) !== null && store.now(d) === null) {
+      report.splice(
+        report.findIndex((r) => r.line === `D ${d}`),
         1,
       );
-      rows.splice(
-        rows.findIndex((r) => r.line === `A ${target}`),
+      report.splice(
+        report.findIndex((r) => r.line === `A ${dest}`),
         1,
       );
-      rows.push({ key: target, line: `R ${d} -> ${target}` });
-      deleted.delete(d);
-      added.delete(target);
+      report.push({ key: dest, line: `R ${d} -> ${dest}` });
+      removed.delete(d);
+      created.delete(dest);
     }
   }
-  rows.sort((a, b) => byteCmp(a.key, b.key));
-  if (!check) {
-    for (const p of vault.changed.keys()) {
-      const was = vault.orig(p);
-      const now = vault.changed.get(p) as string | null;
+  report.sort((a, b) => byteCmp(a.key, b.key));
+  if (!dry) {
+    for (const p of store.changed.keys()) {
+      const was = store.orig(p);
+      const now = store.changed.get(p) as string | null;
       if (was === now) continue;
       if (now === null) fs.rmSync(p, { force: true });
       else {
@@ -1029,16 +1030,16 @@ function run(argv: string[]): { code: number; out: string[] } {
       }
     }
   }
-  const n = rows.length;
-  return { code: 0, out: [...rows.map((r) => r.line), `ok: ${n} ${n === 1 ? 'file' : 'files'}`] };
+  const n = report.length;
+  return { code: 0, out: [...report.map((r) => r.line), `ok: ${n} ${n === 1 ? 'file' : 'files'}`] };
 }
 
-const trialEnv = process.env.MAKEFUN_ENV_URL;
-if (trialEnv !== undefined && trialEnv !== '') {
+const trial = process.env.MAKEFUN_ENV_URL;
+if (trial !== undefined && trial !== '') {
   const { runTrial } = await import('./runner.ts');
-  await runTrial(trialEnv);
+  await runTrial(trial);
 } else {
-  const r = run(process.argv.slice(2));
-  fs.writeSync(1, r.out.map((l) => `${l}\n`).join(''));
-  process.exitCode = r.code;
+  const res = drive(process.argv.slice(2));
+  fs.writeSync(1, res.out.map((l) => `${l}\n`).join(''));
+  process.exitCode = res.code;
 }

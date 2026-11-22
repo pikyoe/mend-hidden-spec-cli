@@ -1,40 +1,42 @@
-# mend-hidden-spec-cli
+# mend
 
 [![make.fun · hidden-spec-cli-01-run-20261122](https://make.fun/badge/hidden-spec-cli-01-run-20261122.svg)](https://make.fun/bounty/hidden-spec-cli-01-run-20261122?utm_source=github&utm_medium=readme&utm_campaign=hidden-spec-cli-01-run-20261122)
 [![rank](https://make.fun/badge/hidden-spec-cli-01-run-20261122/pikyoe/mend-hidden-spec-cli/rank.svg)](https://make.fun/bounty/hidden-spec-cli-01-run-20261122/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=hidden-spec-cli-01-run-20261122)
 [![reward](https://make.fun/badge/hidden-spec-cli-01-run-20261122/pikyoe/mend-hidden-spec-cli/reward.svg)](https://make.fun/bounty/hidden-spec-cli-01-run-20261122?utm_source=github&utm_medium=readme&utm_campaign=hidden-spec-cli-01-run-20261122)
 
-mend is one command-line tool that applies AI-written edits in four formats —
-unified diffs (even with wrong line numbers), SEARCH/REPLACE blocks, V4A
-patches and JSON tool calls — to a tree of text files, to the specification in
-SPEC.md. It finds the lines an edit names even when the model drifted their
-whitespace or indentation, and changes every file or none.
+A single command that takes an AI-written patch and applies it to a tree of
+text files. It understands four patch shapes: unified diffs whose line
+numbers cannot be trusted, SEARCH/REPLACE blocks, V4A patches, and JSON tool
+calls. When the model drifted the whitespace of the lines it names, mend
+still finds them, and it writes every change or none at all. The full
+contract lives in SPEC.md.
 
-Built for make.fun's
+Made for make.fun's
 [Build mend, one patch tool for every AI edit format](https://make.fun/bounty/hidden-spec-cli-01-run-20261122)
 bounty.
 
-## Run it
+## Use
 
 ```sh
 node main.ts [--format=NAME] [--check] [--strict] [PATCH]
 ```
 
-PATCH is the patch file, or standard input when absent or `-`. `--format`
-picks one format (`unified`, `search-replace`, `v4a`, `json`); `auto` (the
-default) detects it. `--check` reports what would change without writing
-anything. `--strict` matches lines exactly.
+PATCH names the patch file; leave it out, or pass `-`, to read standard
+input. `--format` picks one shape (`unified`, `search-replace`, `v4a`,
+`json`); the default `auto` works it out from the text. `--check` prints
+what would change and writes nothing. `--strict` turns off fuzzy matching
+and requires lines to match exactly.
 
-## The files
+## Layout
 
-- `main.ts`: the CLI, Node 22 and its standard library alone.
-- `runner.ts`: the kit's runner, unchanged. In a trial it reads the checks
-  from the environment and runs `main.ts` on each one.
-- `check.ts`: runs the kit's 100 practice checks against `main.ts` locally:
+- `main.ts` — the whole tool. Node 22, standard library only.
+- `runner.ts` — the kit's runner, untouched. During a trial it pulls the
+  checks from the environment and runs `main.ts` against each one.
+- `check.ts` — runs the kit's 100 practice checks against `main.ts` here:
 
 ```sh
 node check.ts ../program/generator/practice.json
 ```
 
-- `SPEC.md`: the specification this tool implements.
-- `LICENSE`: MIT.
+- `SPEC.md` — the specification the tool implements.
+- `LICENSE` — MIT.
